@@ -9,6 +9,8 @@ This tool reads event data exported from a particle physics generator and
 renders particle tracks in a 3D environment. It is intended as a lightweight
 interactive demonstration rather than a full experimental analysis framework.
 
+---
+
 ## Features
 - 3D particle event visualization
 - Animated track rendering
@@ -16,17 +18,37 @@ interactive demonstration rather than a full experimental analysis framework.
 - Camera controls for inspecting events
 - JSON-based event input pipeline
 
+---
+
+## Demo
+
+![Event Visualization Demo](assets/demo.gif)
+
+---
+
+## Screenshot
+
+![Event Screenshot](assets/screenshot.png)
+
+---
+
+## Controls
+
+| Control | Action |
+|---------|--------|
+| WASD    | Move camera |
+| Mouse   | Look around |
+| Scroll  | Zoom |
+
+---
+
 ## Tech Stack
 - Godot
 - Python
 - Pythia-generated event data
 - JSON for event interchange
 
-## Screenshots
-assets/screenshot.png
-
-## Demo
-assets/pythia-viewer.avi
+---
 
 ## Running the Project
 1. Clone the repository
@@ -60,3 +82,7 @@ color-coded according to particle type, with the following color scheme:
 - camera rig polish
 - collision / detector geometry overlays
 - packaged executable release
+
+## Author
+Matthew Lockner  
+PhD Nuclear Physics – Iowa State University
