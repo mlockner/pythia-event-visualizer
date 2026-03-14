@@ -35,6 +35,7 @@ var t := 0.0
 
 var current_event_index: int = 0
 var event_timer: float = 0.0
+var event_label: Label
 
 var heads_multimesh_instance: MultiMeshInstance3D
 var heads_multimesh: MultiMesh
@@ -54,6 +55,7 @@ func _ready() -> void:
 	setup_environment()
 	create_vertex_marker()
 	create_beamline()
+	create_event_label()
 	load_event_from_path(EVENT_PATHS[current_event_index])
 
 func _process(delta: float) -> void:
@@ -243,6 +245,7 @@ void fragment() {
 			"color": color
 		})
 
+	update_event_label()
 	t = 0.0
 	event_timer = 0.0
 
@@ -271,6 +274,27 @@ func clear_current_event() -> void:
 		halos_multimesh_instance.queue_free()
 		halos_multimesh_instance = null
 		halos_multimesh = null
+
+
+func create_event_label() -> void:
+	var canvas_layer: CanvasLayer = CanvasLayer.new()
+	add_child(canvas_layer)
+
+	event_label = Label.new()
+	event_label.text = ""
+	event_label.position = Vector2(20, 180)
+	event_label.add_theme_font_size_override("font_size", 26)
+	event_label.modulate = Color(1.0, 1.0, 1.0, 1.0)
+
+	canvas_layer.add_child(event_label)
+	update_event_label()
+
+
+func update_event_label() -> void:
+	if event_label == null:
+		return
+
+	event_label.text = "Event %d / %d" % [current_event_index + 1, EVENT_PATHS.size()]
 
 
 func create_heads_multimesh(count: int):
