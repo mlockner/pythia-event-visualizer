@@ -1,6 +1,15 @@
 extends Node3D
 
-const EVENT_PATH := "res://event_data/pythia_event.json"
+const EVENT_PATHS := [
+	"res://event_data/pythia_event_1.json",
+	"res://event_data/pythia_event_2.json",
+	"res://event_data/pythia_event_3.json",
+	"res://event_data/pythia_event_4.json",
+	"res://event_data/pythia_event_5.json",
+]
+
+const EVENT_DURATION := 10.0
+
 const DISPLAY_SPEED_MPS := 2.0
 const HEAD_RADIUS := 0.05
 
@@ -24,6 +33,9 @@ const CAMERA_PITCH_MAX := 0.2
 var particles: Array = []
 var t := 0.0
 
+var current_event_index: int = 0
+var event_timer: float = 0.0
+
 var heads_multimesh_instance: MultiMeshInstance3D
 var heads_multimesh: MultiMesh
 var halos_multimesh_instance: MultiMeshInstance3D
@@ -37,73 +49,66 @@ var camera_yaw := 0.0
 var camera_pitch := -0.65
 
 
-func _ready():
+func _ready() -> void:
 	setup_camera()
 	setup_environment()
-	load_event()
 	create_vertex_marker()
 	create_beamline()
+	load_event_from_path(EVENT_PATHS[current_event_index])
 
-
-func _process(delta):
+func _process(delta: float) -> void:
 	t = min(t + delta, 10.0)
-	
+	event_timer += delta
+
+	if event_timer >= EVENT_DURATION:
+		advance_to_next_event()
+
 	camera_yaw += delta * CAMERA_AUTO_YAW_SPEED
 	camera_yaw_rig.rotation.y = camera_yaw
 	camera_pitch_rig.rotation.x = camera_pitch
 
 	if heads_multimesh == null:
 		return
-
 	if main_camera == null:
 		return
 
 	for i in range(particles.size()):
-		var p = particles[i]
-
+		var p: Dictionary = particles[i]
 		var dir: Vector3 = p["dir"]
 		var color: Color = p["color"]
 		var pos: Vector3 = dir * DISPLAY_SPEED_MPS * t
 
-		# Move particle head
-		var xform := Transform3D(Basis(), pos)
+		var xform: Transform3D = Transform3D(Basis(), pos)
 		heads_multimesh.set_instance_transform(i, xform)
 		halos_multimesh.set_instance_transform(i, xform)
 
-		# Build a camera-facing ribbon trail from origin -> current position
 		var mesh: ImmediateMesh = p["trail"]
 		mesh.clear_surfaces()
 		mesh.surface_begin(Mesh.PRIMITIVE_TRIANGLE_STRIP)
 
-		var trail_dir := dir.normalized()
+		var trail_dir: Vector3 = dir.normalized()
 
 		for s in range(TRAIL_SEGMENTS + 1):
-			var u := float(s) / float(TRAIL_SEGMENTS)
-			var pt := pos * u
+			var u: float = float(s) / float(TRAIL_SEGMENTS)
+			var pt: Vector3 = pos * u
 
-			# Direction from ribbon point toward camera, in local coordinates
-			var to_cam := (main_camera.position - pt).normalized()
-
-			# Side vector so the ribbon faces the camera
-			var side := trail_dir.cross(to_cam)
+			var to_cam: Vector3 = (main_camera.position - pt).normalized()
+			var side: Vector3 = trail_dir.cross(to_cam)
 			if side.length_squared() < 1e-8:
 				side = trail_dir.cross(Vector3.UP)
-				if side.length_squared() < 1e-8:
-					side = trail_dir.cross(Vector3.RIGHT)
-
+			if side.length_squared() < 1e-8:
+				side = trail_dir.cross(Vector3.RIGHT)
 			side = side.normalized()
 
-			# Brightness ramps up toward the particle head
-			var brightness_u := pow(u, TRAIL_ALPHA_EXPONENT)
-			var flare_u := pow(u, 6.0)
-			var alpha := lerpf(TRAIL_MIN_ALPHA, TRAIL_MAX_ALPHA, brightness_u) + 0.15 * flare_u
+			var brightness_u: float = pow(u, TRAIL_ALPHA_EXPONENT)
+			var flare_u: float = pow(u, 6.0)
+			var alpha: float = lerpf(TRAIL_MIN_ALPHA, TRAIL_MAX_ALPHA, brightness_u) + 0.15 * flare_u
 			alpha = clamp(alpha, 0.0, 1.0)
 
-			# Width also grows toward the head
-			var width_u := pow(u, TRAIL_WIDTH_EXPONENT)
-			var half_width := 0.5 * lerpf(TRAIL_MIN_WIDTH, TRAIL_MAX_WIDTH, width_u)
+			var width_u: float = pow(u, TRAIL_WIDTH_EXPONENT)
+			var half_width: float = 0.5 * lerpf(TRAIL_MIN_WIDTH, TRAIL_MAX_WIDTH, width_u)
 
-			var c := Color(color.r, color.g, color.b, alpha)
+			var c: Color = Color(color.r, color.g, color.b, alpha)
 
 			mesh.surface_set_color(c)
 			mesh.surface_add_vertex(pt - side * half_width)
@@ -163,22 +168,24 @@ func particle_color_from_pid(pid: int) -> Color:
 		return Color(0.65, 0.65, 0.65)  # gray
 		
 
-func load_event():
-	var file = FileAccess.open(EVENT_PATH, FileAccess.READ)
+func load_event_from_path(event_path: String) -> void:
+	clear_current_event()
+
+	var file: FileAccess = FileAccess.open(event_path, FileAccess.READ)
 	if file == null:
-		push_error("Could not open %s" % EVENT_PATH)
+		push_error("Could not open %s" % event_path)
 		return
 
-	var text := file.get_as_text()
-	var json := JSON.new()
-	var err := json.parse(text)
+	var text: String = file.get_as_text()
+	var json: JSON = JSON.new()
+	var err: int = json.parse(text)
 	if err != OK:
-		push_error("JSON parse failed")
+		push_error("JSON parse failed for %s" % event_path)
 		return
 
-	var data = json.data
+	var data: Variant = json.data
 	if not data.has("particles"):
-		push_error("No particles array in JSON")
+		push_error("No particles array in JSON for %s" % event_path)
 		return
 
 	var visible_items: Array = []
@@ -188,30 +195,30 @@ func load_event():
 		visible_items.append(item)
 
 	if visible_items.is_empty():
-		push_error("No visible particles found in JSON")
+		push_error("No visible particles found in %s" % event_path)
 		return
 
 	create_heads_multimesh(visible_items.size())
 	create_halos_multimesh(visible_items.size())
-	
-	for i in range(visible_items.size()):
-		var item = visible_items[i]
 
-		var d = item["direction"]
-		var dir := Vector3(d["x"], d["y"], d["z"]).normalized()
+	for i in range(visible_items.size()):
+		var item: Dictionary = visible_items[i]
+		var d: Dictionary = item["direction"]
+		var dir: Vector3 = Vector3(d["x"], d["y"], d["z"]).normalized()
 		var pid: int = int(item["pid"])
-		var color := particle_color_from_pid(pid)
+		var color: Color = particle_color_from_pid(pid)
 
 		heads_multimesh.set_instance_transform(i, Transform3D(Basis(), Vector3.ZERO))
 		heads_multimesh.set_instance_color(i, color)
+
 		halos_multimesh.set_instance_transform(i, Transform3D(Basis(), Vector3.ZERO))
 		halos_multimesh.set_instance_color(i, Color(color.r, color.g, color.b, HALO_ALPHA))
-		
-		var trail := MeshInstance3D.new()
-		var trail_mesh := ImmediateMesh.new()
+
+		var trail: MeshInstance3D = MeshInstance3D.new()
+		var trail_mesh: ImmediateMesh = ImmediateMesh.new()
 		trail.mesh = trail_mesh
 
-		var trail_shader := Shader.new()
+		var trail_shader: Shader = Shader.new()
 		trail_shader.code = """
 shader_type spatial;
 render_mode unshaded, cull_disabled, depth_draw_never, blend_add;
@@ -223,7 +230,7 @@ void fragment() {
 }
 """
 
-		var trail_mat := ShaderMaterial.new()
+		var trail_mat: ShaderMaterial = ShaderMaterial.new()
 		trail_mat.shader = trail_shader
 		trail.material_override = trail_mat
 
@@ -232,8 +239,38 @@ void fragment() {
 		particles.append({
 			"dir": dir,
 			"trail": trail_mesh,
+			"trail_node": trail,
 			"color": color
 		})
+
+	t = 0.0
+	event_timer = 0.0
+
+
+func advance_to_next_event() -> void:
+	current_event_index = (current_event_index + 1) % EVENT_PATHS.size()
+	load_event_from_path(EVENT_PATHS[current_event_index])
+
+
+func clear_current_event() -> void:
+	for p in particles:
+		var particle_dict: Dictionary = p
+		if particle_dict.has("trail_node"):
+			var trail_node: MeshInstance3D = particle_dict["trail_node"]
+			if is_instance_valid(trail_node):
+				trail_node.queue_free()
+
+	particles.clear()
+
+	if heads_multimesh_instance != null and is_instance_valid(heads_multimesh_instance):
+		heads_multimesh_instance.queue_free()
+		heads_multimesh_instance = null
+		heads_multimesh = null
+
+	if halos_multimesh_instance != null and is_instance_valid(halos_multimesh_instance):
+		halos_multimesh_instance.queue_free()
+		halos_multimesh_instance = null
+		halos_multimesh = null
 
 
 func create_heads_multimesh(count: int):

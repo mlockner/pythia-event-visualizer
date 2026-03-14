@@ -17,6 +17,11 @@ except ImportError:
     sys.exit(1)
 
 
+OUTPUT_DIR = "/mnt/c/Users/mlock/Documents/pythia-event-visualizer/godot-project/event_data"
+NUM_EVENTS = 5
+DEFAULT_DISPLAY_SPEED_MPS = 10.0
+
+
 def particle_color(pid: int) -> str:
     apid = abs(pid)
 
@@ -136,28 +141,7 @@ def export_event(evt, output_path, event_id=1, default_speed_mps=10.0):
     print(f"Wrote {len(particles)} particles to {output_path}")
 
 
-def main():
-    pythia = pythia8.Pythia()
-
-    pythia.readString("Beams:idA = 2212")
-    pythia.readString("Beams:idB = 2212")
-    pythia.readString("Beams:eCM = 13000.")
-    pythia.readString("HardQCD:all = on")
-    pythia.readString("PhaseSpace:pTHatMin = 20.")
-
-    if not pythia.init():
-        raise RuntimeError("PYTHIA failed to initialize.")
-
-    success = False
-    for _ in range(20):
-        if pythia.next():
-            success = True
-            break
-
-    if not success:
-        raise RuntimeError("Failed to generate an event.")
-
-    evt = pythia.event
+def build_particle_list(evt):
     particles = []
 
     for i in range(evt.size()):
@@ -182,16 +166,59 @@ def main():
             "color": particle_color(p.id()),
         })
 
-    if not particles:
-        raise RuntimeError("No final-state particles found.")
+    return particles
 
-    print(f"Animating {len(particles)} particles")
 
-    # Optional: cap particle count for speed
-    # particles.sort(key=lambda part: part["p"], reverse=True)
-    # particles = particles[:80]
+def main():
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-    display_speed = 10.0
+    pythia = pythia8.Pythia()
+
+    pythia.readString("Beams:idA = 2212")
+    pythia.readString("Beams:idB = 2212")
+    pythia.readString("Beams:eCM = 13000.")
+    pythia.readString("HardQCD:all = on")
+    pythia.readString("PhaseSpace:pTHatMin = 20.")
+
+    if not pythia.init():
+        raise RuntimeError("PYTHIA failed to initialize.")
+
+    first_event_particles = None
+    exported_count = 0
+
+    for event_id in range(1, NUM_EVENTS + 1):
+        success = False
+        for _ in range(50):
+            if pythia.next():
+                success = True
+                break
+
+        if not success:
+            raise RuntimeError(f"Failed to generate event {event_id}.")
+
+        evt = pythia.event
+        output_path = os.path.join(OUTPUT_DIR, f"pythia_event_{event_id}.json")
+        export_event(
+            evt,
+            output_path,
+            event_id=event_id,
+            default_speed_mps=DEFAULT_DISPLAY_SPEED_MPS
+        )
+
+        if first_event_particles is None:
+            first_event_particles = build_particle_list(evt)
+
+        exported_count += 1
+
+    if not first_event_particles:
+        raise RuntimeError("No final-state particles found in first event.")
+
+    particles = first_event_particles
+
+    print(f"Animating {len(particles)} particles from event 1")
+    print(f"Exported {exported_count} events to {OUTPUT_DIR}")
+
+    display_speed = DEFAULT_DISPLAY_SPEED_MPS
     lim = 3.0
     duration = lim / display_speed
     fps = 60
@@ -238,7 +265,7 @@ def main():
     ax.set_xlabel("x [m]")
     ax.set_ylabel("y [m]")
     ax.set_zlabel("z [m]")
-    ax.set_title("PYTHIA Event Slow-Motion Expansion")
+    ax.set_title("PYTHIA Event Slow-Motion Expansion (Event 1 Preview)")
 
     try:
         ax.set_box_aspect((1, 1, 1))
@@ -274,7 +301,7 @@ def main():
     plt.tight_layout()
     plt.show()
 
-    print("\nFinal-state particle summary:")
+    print("\nFinal-state particle summary for event 1 preview:")
     counts = {}
     for part in particles:
         label = particle_label(part["id"])
@@ -284,7 +311,7 @@ def main():
         print(f"  {k:16s}: {counts[k]}")
 
     print(f"\nTotal final-state particles animated: {len(particles)}")
-    export_event(evt, "/mnt/c/Users/smlock/Documents/pythia-event-visualizer/event_data/pythia_event.json")
+
 
 if __name__ == "__main__":
     main()
