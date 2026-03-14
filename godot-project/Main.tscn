@@ -1,0 +1,32 @@
+[gd_scene format=3 uid="uid://b4iosknna2frr"]
+
+[ext_resource type="Script" uid="uid://bgu5peedmroiq" path="res://new_script.gd" id="1_glv2v"]
+
+[node name="Main" type="Node3D" unique_id=160453703]
+script = ExtResource("1_glv2v")
+
+[node name="CameraYawRig" type="Node3D" parent="." unique_id=1565738166]
+
+[node name="CameraPitchRig" type="Node3D" parent="CameraYawRig" unique_id=307607704]
+
+[node name="Camera3D" type="Camera3D" parent="CameraYawRig/CameraPitchRig" unique_id=1765063720]
+current = true
+
+[node name="DirectionalLight3D" type="DirectionalLight3D" parent="." unique_id=1473368683]
+
+[node name="WorldEnvironment" type="WorldEnvironment" parent="." unique_id=1926426123]
+
+[node name="UI" type="CanvasLayer" parent="." unique_id=1164550124]
+
+[node name="Label" type="Label" parent="UI" unique_id=1177464049]
+offset_left = 20.0
+offset_top = 20.0
+offset_right = 281.0
+offset_bottom = 95.0
+theme_override_colors/font_shadow_color = Color(0, 0, 0, 1)
+theme_override_constants/shadow_offset_x = 2
+theme_override_constants/shadow_offset_y = 2
+theme_override_font_sizes/font_size = 32
+text = "PYTHIA 8 Proton–Proton Event
+√s = 13 TeV
+Slow-motion particle visualization"
