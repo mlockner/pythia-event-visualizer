@@ -17,6 +17,22 @@ const TRAIL_MIN_WIDTH := 0.015
 const TRAIL_MAX_WIDTH := 0.08
 const TRAIL_WIDTH_EXPONENT := 3.0
 
+const MAGNETIC_FIELD_ENABLED := true
+const B_FIELD_Z := 1.0
+
+const TRACK_DURATION := 10.0
+const PATH_SAMPLES := 96
+
+# Visual scaling knobs rather than strict detector units.
+const HELIX_RADIUS_SCALE := 0.22
+const HELIX_ANGULAR_SCALE := 2.4
+const HELIX_Z_SCALE := DISPLAY_SPEED_MPS * 0.55
+
+const MIN_PT_FOR_HELIX := 0.02
+const MIN_RADIUS := 0.06
+const MAX_RADIUS := 12.0
+const STRAIGHT_SPEED_SCALE := DISPLAY_SPEED_MPS
+
 const CAMERA_AUTO_YAW_SPEED := 0.15
 const CAMERA_PITCH_MIN := -1.2
 const CAMERA_PITCH_MAX := 0.2
@@ -46,72 +62,30 @@ func _ready():
 
 
 func _process(delta):
-	t = min(t + delta, 10.0)
-	
+	t = min(t + delta, TRACK_DURATION)
+
 	camera_yaw += delta * CAMERA_AUTO_YAW_SPEED
 	camera_yaw_rig.rotation.y = camera_yaw
 	camera_pitch_rig.rotation.x = camera_pitch
 
-	if heads_multimesh == null:
+	if heads_multimesh == null or main_camera == null:
 		return
 
-	if main_camera == null:
-		return
+	var motion_u: float = clamp(t / TRACK_DURATION, 0.0, 1.0)
 
 	for i in range(particles.size()):
-		var p = particles[i]
-
-		var dir: Vector3 = p["dir"]
+		var p: Dictionary = particles[i]
+		var path: PackedVector3Array = p["path"]
 		var color: Color = p["color"]
-		var pos: Vector3 = dir * DISPLAY_SPEED_MPS * t
 
-		# Move particle head
-		var xform := Transform3D(Basis(), pos)
+		var head_pos := sample_path(path, motion_u)
+
+		var xform := Transform3D(Basis(), head_pos)
 		heads_multimesh.set_instance_transform(i, xform)
 		halos_multimesh.set_instance_transform(i, xform)
 
-		# Build a camera-facing ribbon trail from origin -> current position
 		var mesh: ImmediateMesh = p["trail"]
-		mesh.clear_surfaces()
-		mesh.surface_begin(Mesh.PRIMITIVE_TRIANGLE_STRIP)
-
-		var trail_dir := dir.normalized()
-
-		for s in range(TRAIL_SEGMENTS + 1):
-			var u := float(s) / float(TRAIL_SEGMENTS)
-			var pt := pos * u
-
-			# Direction from ribbon point toward camera, in local coordinates
-			var to_cam := (main_camera.position - pt).normalized()
-
-			# Side vector so the ribbon faces the camera
-			var side := trail_dir.cross(to_cam)
-			if side.length_squared() < 1e-8:
-				side = trail_dir.cross(Vector3.UP)
-				if side.length_squared() < 1e-8:
-					side = trail_dir.cross(Vector3.RIGHT)
-
-			side = side.normalized()
-
-			# Brightness ramps up toward the particle head
-			var brightness_u := pow(u, TRAIL_ALPHA_EXPONENT)
-			var flare_u := pow(u, 6.0)
-			var alpha := lerpf(TRAIL_MIN_ALPHA, TRAIL_MAX_ALPHA, brightness_u) + 0.15 * flare_u
-			alpha = clamp(alpha, 0.0, 1.0)
-
-			# Width also grows toward the head
-			var width_u := pow(u, TRAIL_WIDTH_EXPONENT)
-			var half_width := 0.5 * lerpf(TRAIL_MIN_WIDTH, TRAIL_MAX_WIDTH, width_u)
-
-			var c := Color(color.r, color.g, color.b, alpha)
-
-			mesh.surface_set_color(c)
-			mesh.surface_add_vertex(pt - side * half_width)
-
-			mesh.surface_set_color(c)
-			mesh.surface_add_vertex(pt + side * half_width)
-
-		mesh.surface_end()
+		rebuild_trail_mesh(mesh, path, motion_u, color)
 
 
 func _input(event):
@@ -200,13 +174,15 @@ func load_event():
 		var d = item["direction"]
 		var dir := Vector3(d["x"], d["y"], d["z"]).normalized()
 		var pid: int = int(item["pid"])
+		var charge := float(item.get("charge", 0.0))
+		var p_gev := float(item.get("p_GeV", 1.0))
 		var color := particle_color_from_pid(pid)
 
 		heads_multimesh.set_instance_transform(i, Transform3D(Basis(), Vector3.ZERO))
 		heads_multimesh.set_instance_color(i, color)
 		halos_multimesh.set_instance_transform(i, Transform3D(Basis(), Vector3.ZERO))
 		halos_multimesh.set_instance_color(i, Color(color.r, color.g, color.b, HALO_ALPHA))
-		
+
 		var trail := MeshInstance3D.new()
 		var trail_mesh := ImmediateMesh.new()
 		trail.mesh = trail_mesh
@@ -229,12 +205,156 @@ void fragment() {
 
 		add_child(trail)
 
+		var path := build_particle_path(dir, charge, p_gev)
+
 		particles.append({
 			"dir": dir,
+			"charge": charge,
+			"p_gev": p_gev,
+			"path": path,
 			"trail": trail_mesh,
 			"color": color
 		})
 
+
+func build_particle_path(dir: Vector3, charge: float, p_gev: float) -> PackedVector3Array:
+	if not MAGNETIC_FIELD_ENABLED or abs(charge) < 0.001:
+		return build_straight_path(dir)
+
+	return build_helical_path(dir, charge, p_gev)
+
+
+func build_straight_path(dir: Vector3) -> PackedVector3Array:
+	var pts := PackedVector3Array()
+	var track_length := STRAIGHT_SPEED_SCALE * TRACK_DURATION
+
+	for i in range(PATH_SAMPLES):
+		var u := float(i) / float(PATH_SAMPLES - 1)
+		pts.append(dir * track_length * u)
+
+	return pts
+
+
+func build_helical_path(dir: Vector3, charge: float, p_gev: float) -> PackedVector3Array:
+	var pts: PackedVector3Array = PackedVector3Array()
+
+	var transverse: Vector3 = Vector3(dir.x, dir.y, 0.0)
+	var pt_dir: Vector3 = transverse.normalized()
+	var pt_mag: float = transverse.length() * p_gev
+	var pz_mag: float = dir.z * p_gev
+
+	if transverse.length_squared() < 1e-10 or abs(pt_mag) < MIN_PT_FOR_HELIX:
+		return build_straight_path(dir)
+
+	var radius: float = HELIX_RADIUS_SCALE * pt_mag / max(abs(charge) * B_FIELD_Z, 0.001)
+	radius = clamp(radius, MIN_RADIUS, MAX_RADIUS)
+
+	var omega: float = HELIX_ANGULAR_SCALE * charge * B_FIELD_Z / max(pt_mag, MIN_PT_FOR_HELIX)
+
+	# Choose radial direction so the tangent at s=0 matches pt_dir.
+	var radial0: Vector3 = Vector3(-pt_dir.y, pt_dir.x, 0.0) * sign(charge)
+	var center: Vector3 = radial0 * radius
+
+	for i in range(PATH_SAMPLES):
+		var u: float = float(i) / float(PATH_SAMPLES - 1)
+		var s: float = TRACK_DURATION * u
+		var theta: float = omega * s
+
+		var radial: Vector3 = radial0.rotated(Vector3.FORWARD, theta)
+		var xy: Vector3 = center - radial
+		var z: float = HELIX_Z_SCALE * pz_mag * u
+
+		pts.append(Vector3(xy.x, xy.y, z))
+
+	return pts
+
+
+func sample_path(path: PackedVector3Array, u: float) -> Vector3:
+	if path.is_empty():
+		return Vector3.ZERO
+	if path.size() == 1:
+		return path[0]
+
+	var scaled: float = clamp(u, 0.0, 1.0) * float(path.size() - 1)
+	var i0: int = int(floor(scaled))
+	var i1: int = mini(i0 + 1, path.size() - 1)
+	var frac: float = scaled - float(i0)
+
+	return path[i0].lerp(path[i1], frac)
+
+
+func sample_path_prefix(path: PackedVector3Array, u: float) -> PackedVector3Array:
+	var out: PackedVector3Array = PackedVector3Array()
+
+	if path.is_empty():
+		return out
+
+	if u <= 0.0:
+		out.append(path[0])
+		return out
+
+	var scaled: float = clamp(u, 0.0, 1.0) * float(path.size() - 1)
+	var last_full: int = int(floor(scaled))
+	last_full = clamp(last_full, 0, path.size() - 1)
+
+	for i in range(last_full + 1):
+		out.append(path[i])
+
+	if last_full < path.size() - 1:
+		var frac: float = scaled - float(last_full)
+		if frac > 1e-6:
+			out.append(path[last_full].lerp(path[last_full + 1], frac))
+
+	return out
+
+
+func rebuild_trail_mesh(mesh: ImmediateMesh, path: PackedVector3Array, motion_u: float, color: Color) -> void:
+	mesh.clear_surfaces()
+	mesh.surface_begin(Mesh.PRIMITIVE_TRIANGLE_STRIP)
+
+	var prefix := sample_path_prefix(path, motion_u)
+	if prefix.size() < 2:
+		mesh.surface_end()
+		return
+
+	for s in range(prefix.size()):
+		var u := float(s) / float(prefix.size() - 1)
+		var pt := prefix[s]
+
+		var tangent: Vector3
+		if s == 0:
+			tangent = (prefix[1] - prefix[0]).normalized()
+		elif s == prefix.size() - 1:
+			tangent = (prefix[s] - prefix[s - 1]).normalized()
+		else:
+			tangent = (prefix[s + 1] - prefix[s - 1]).normalized()
+
+		var to_cam := (main_camera.global_position - pt).normalized()
+		var side := tangent.cross(to_cam)
+		if side.length_squared() < 1e-8:
+			side = tangent.cross(Vector3.UP)
+			if side.length_squared() < 1e-8:
+				side = tangent.cross(Vector3.RIGHT)
+		side = side.normalized()
+
+		var brightness_u := pow(u, TRAIL_ALPHA_EXPONENT)
+		var flare_u := pow(u, 6.0)
+		var alpha := lerpf(TRAIL_MIN_ALPHA, TRAIL_MAX_ALPHA, brightness_u) + 0.15 * flare_u
+		alpha = clamp(alpha, 0.0, 1.0)
+
+		var width_u := pow(u, TRAIL_WIDTH_EXPONENT)
+		var half_width := 0.5 * lerpf(TRAIL_MIN_WIDTH, TRAIL_MAX_WIDTH, width_u)
+
+		var c := Color(color.r, color.g, color.b, alpha)
+
+		mesh.surface_set_color(c)
+		mesh.surface_add_vertex(pt - side * half_width)
+
+		mesh.surface_set_color(c)
+		mesh.surface_add_vertex(pt + side * half_width)
+
+	mesh.surface_end()
+	
 
 func create_heads_multimesh(count: int):
 	heads_multimesh_instance = MultiMeshInstance3D.new()
@@ -383,7 +503,7 @@ func setup_camera():
 	camera_yaw_rig.rotation.y = camera_yaw
 	camera_pitch_rig.rotation.x = camera_pitch
 
-	main_camera.position = Vector3(0.0, 0.0, 22.0)
+	main_camera.position = Vector3(0.0, 0.0, 7.0)
 	main_camera.look_at(Vector3.ZERO, Vector3.UP)
 
 
