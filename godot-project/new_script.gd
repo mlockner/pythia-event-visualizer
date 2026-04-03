@@ -8,7 +8,13 @@ const EVENT_PATHS := [
 	"res://event_data/pythia_event_5.json",
 ]
 
-const EVENT_DURATION := 10.0
+const SIM_START_TIME := -4.5
+const COLLISION_TIME := 0.0
+const INCOMING_PROTON_SPEED := 4.0
+const INCOMING_PROTON_OFFSET_X := 0.0
+
+const POST_COLLISION_DURATION := 10.0
+const TOTAL_EVENT_DURATION := POST_COLLISION_DURATION - SIM_START_TIME
 
 const DISPLAY_SPEED_MPS := 2.0
 const HEAD_RADIUS := 0.05
@@ -30,8 +36,14 @@ const CAMERA_AUTO_YAW_SPEED := 0.15
 const CAMERA_PITCH_MIN := -1.2
 const CAMERA_PITCH_MAX := 0.2
 
+const HIDDEN_POS := Vector3(0.0, -1000.0, 0.0)
+
 var particles: Array = []
-var t := 0.0
+
+var proton_in_a: MeshInstance3D
+var proton_in_b: MeshInstance3D
+
+var t := SIM_START_TIME
 
 var current_event_index: int = 0
 var event_timer: float = 0.0
@@ -56,35 +68,61 @@ func _ready() -> void:
 	create_vertex_marker()
 	create_beamline()
 	create_event_label()
+
+	proton_in_a = create_incoming_proton()
+	proton_in_b = create_incoming_proton()
+
+	add_child(proton_in_a)
+	add_child(proton_in_b)
+
 	load_event_from_path(EVENT_PATHS[current_event_index])
 
+
 func _process(delta: float) -> void:
-	t = min(t + delta, 10.0)
+	t = min(t + delta, POST_COLLISION_DURATION)
 	event_timer += delta
 
-	if event_timer >= EVENT_DURATION:
+	if event_timer >= TOTAL_EVENT_DURATION:
 		advance_to_next_event()
+		return
+
+	update_incoming_protons(t)
+	update_event_particles(t)
 
 	camera_yaw += delta * CAMERA_AUTO_YAW_SPEED
 	camera_yaw_rig.rotation.y = camera_yaw
 	camera_pitch_rig.rotation.x = camera_pitch
 
+
+func update_event_particles(time_value: float) -> void:
 	if heads_multimesh == null:
+		return
+	if halos_multimesh == null:
 		return
 	if main_camera == null:
 		return
+
+	var event_time : float = maxf(time_value - COLLISION_TIME, 0.0)
+	var before_collision := time_value < COLLISION_TIME
 
 	for i in range(particles.size()):
 		var p: Dictionary = particles[i]
 		var dir: Vector3 = p["dir"]
 		var color: Color = p["color"]
-		var pos: Vector3 = dir * DISPLAY_SPEED_MPS * t
+		var mesh: ImmediateMesh = p["trail"]
+
+		if before_collision:
+			heads_multimesh.set_instance_transform(i, Transform3D(Basis(), HIDDEN_POS))
+			halos_multimesh.set_instance_transform(i, Transform3D(Basis(), HIDDEN_POS))
+			mesh.clear_surfaces()
+			continue
+
+		var pos: Vector3 = dir * DISPLAY_SPEED_MPS * event_time
 
 		var xform: Transform3D = Transform3D(Basis(), pos)
 		heads_multimesh.set_instance_transform(i, xform)
 		halos_multimesh.set_instance_transform(i, xform)
 
-		var mesh: ImmediateMesh = p["trail"]
 		mesh.clear_surfaces()
 		mesh.surface_begin(Mesh.PRIMITIVE_TRIANGLE_STRIP)
 
@@ -94,7 +132,7 @@ func _process(delta: float) -> void:
 			var u: float = float(s) / float(TRAIL_SEGMENTS)
 			var pt: Vector3 = pos * u
 
-			var to_cam: Vector3 = (main_camera.position - pt).normalized()
+			var to_cam: Vector3 = (main_camera.global_position - pt).normalized()
 			var side: Vector3 = trail_dir.cross(to_cam)
 			if side.length_squared() < 1e-8:
 				side = trail_dir.cross(Vector3.UP)
@@ -130,45 +168,29 @@ func _input(event):
 		camera_yaw_rig.rotation.y = camera_yaw
 		camera_pitch_rig.rotation.x = camera_pitch
 
+
 func particle_color_from_pid(pid: int) -> Color:
-	var apid : int = abs(pid)
+	var apid: int = abs(pid)
 
-	# photon
 	if pid == 22:
-		return Color(1.0, 1.0, 0.0)  # yellow
-
-	# electron / positron
+		return Color(1.0, 1.0, 0.0)
 	elif apid == 11:
-		return Color(0.0, 1.0, 0.0)  # green
-
-	# muon
+		return Color(0.0, 1.0, 0.0)
 	elif apid == 13:
-		return Color(0.0, 1.0, 1.0)  # cyan
-
-	# tau
+		return Color(0.0, 1.0, 1.0)
 	elif apid == 15:
-		return Color(0.3, 0.9, 0.9)  # pale cyan
-
-	# neutrinos
+		return Color(0.3, 0.9, 0.9)
 	elif apid in [12, 14, 16]:
-		return Color(0.1, 0.1, 0.4)  # dark blue
-
-	# pions
+		return Color(0.1, 0.1, 0.4)
 	elif apid in [211, 111]:
-		return Color(1.0, 0.0, 0.0)  # red
-
-	# kaons
+		return Color(1.0, 0.0, 0.0)
 	elif apid in [321, 130, 310]:
-		return Color(1.0, 0.5, 0.0)  # orange
-
-	# baryons
+		return Color(1.0, 0.5, 0.0)
 	elif apid in [2212, 2112, 3122]:
-		return Color(1.0, 0.0, 1.0)  # magenta
-
-	# default
+		return Color(1.0, 0.0, 1.0)
 	else:
-		return Color(0.65, 0.65, 0.65)  # gray
-		
+		return Color(0.65, 0.65, 0.65)
+
 
 func load_event_from_path(event_path: String) -> void:
 	clear_current_event()
@@ -210,10 +232,10 @@ func load_event_from_path(event_path: String) -> void:
 		var pid: int = int(item["pid"])
 		var color: Color = particle_color_from_pid(pid)
 
-		heads_multimesh.set_instance_transform(i, Transform3D(Basis(), Vector3.ZERO))
+		heads_multimesh.set_instance_transform(i, Transform3D(Basis(), HIDDEN_POS))
 		heads_multimesh.set_instance_color(i, color)
 
-		halos_multimesh.set_instance_transform(i, Transform3D(Basis(), Vector3.ZERO))
+		halos_multimesh.set_instance_transform(i, Transform3D(Basis(), HIDDEN_POS))
 		halos_multimesh.set_instance_color(i, Color(color.r, color.g, color.b, HALO_ALPHA))
 
 		var trail: MeshInstance3D = MeshInstance3D.new()
@@ -246,7 +268,7 @@ void fragment() {
 		})
 
 	update_event_label()
-	t = 0.0
+	t = SIM_START_TIME
 	event_timer = 0.0
 
 
@@ -297,7 +319,40 @@ func update_event_label() -> void:
 	event_label.text = "Event %d / %d" % [current_event_index + 1, EVENT_PATHS.size()]
 
 
-func create_heads_multimesh(count: int):
+func create_incoming_proton() -> MeshInstance3D:
+	var mesh_instance := MeshInstance3D.new()
+	var sphere := SphereMesh.new()
+	sphere.radius = 0.11
+	sphere.height = 0.22
+
+	var proton_color := Color(0.5, 0.8, 1.0)
+
+	var mat := StandardMaterial3D.new()
+	mat.albedo_color = proton_color
+	mat.emission_enabled = true
+	mat.emission = proton_color
+	mat.emission_energy_multiplier = 3.0
+	mesh_instance.mesh = sphere
+	mesh_instance.material_override = mat
+
+	return mesh_instance
+
+
+func update_incoming_protons(time_value: float) -> void:
+	if time_value < COLLISION_TIME:
+		proton_in_a.visible = true
+		proton_in_b.visible = true
+
+		var z := INCOMING_PROTON_SPEED * time_value
+
+		proton_in_a.position = Vector3(INCOMING_PROTON_OFFSET_X, 0.0, z)
+		proton_in_b.position = Vector3(-INCOMING_PROTON_OFFSET_X, 0.0, -z)
+	else:
+		proton_in_a.visible = false
+		proton_in_b.visible = false
+
+
+func create_heads_multimesh(count: int) -> void:
 	heads_multimesh_instance = MultiMeshInstance3D.new()
 	heads_multimesh = MultiMesh.new()
 
@@ -324,7 +379,7 @@ func create_heads_multimesh(count: int):
 	add_child(heads_multimesh_instance)
 
 
-func create_halos_multimesh(count: int):
+func create_halos_multimesh(count: int) -> void:
 	halos_multimesh_instance = MultiMeshInstance3D.new()
 	halos_multimesh = MultiMesh.new()
 
@@ -353,7 +408,7 @@ func create_halos_multimesh(count: int):
 	add_child(halos_multimesh_instance)
 
 
-func create_vertex_marker():
+func create_vertex_marker() -> void:
 	var marker := MeshInstance3D.new()
 
 	var sphere := SphereMesh.new()
@@ -373,7 +428,7 @@ func create_vertex_marker():
 	add_child(marker)
 
 
-func create_beamline():
+func create_beamline() -> void:
 	var beam := MeshInstance3D.new()
 
 	var cyl := CylinderMesh.new()
@@ -390,21 +445,19 @@ func create_beamline():
 	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
 	beam.material_override = mat
 
-	# CylinderMesh points along Y by default; rotate so beam lies along Z
 	beam.rotation_degrees.x = 90.0
 	beam.position = Vector3.ZERO
 
 	add_child(beam)
 
 
-func create_detector():
-	create_detector_layer(0.15, 40.0, Color(0.7, 0.7, 0.7), 0.15) # beam pipe
-	create_detector_layer(2.0, 40.0, Color(0.3, 0.8, 1.0), 0.10)  # tracker
-	create_detector_layer(4.0, 40.0, Color(1.0, 0.6, 0.2), 0.08)  # calorimeter
+func create_detector() -> void:
+	create_detector_layer(0.15, 40.0, Color(0.7, 0.7, 0.7), 0.15)
+	create_detector_layer(2.0, 40.0, Color(0.3, 0.8, 1.0), 0.10)
+	create_detector_layer(4.0, 40.0, Color(1.0, 0.6, 0.2), 0.08)
 
 
-func create_detector_layer(radius: float, length: float, color: Color, alpha: float):
-
+func create_detector_layer(radius: float, length: float, color: Color, alpha: float) -> void:
 	var cyl := MeshInstance3D.new()
 
 	var mesh := CylinderMesh.new()
@@ -423,14 +476,12 @@ func create_detector_layer(radius: float, length: float, color: Color, alpha: fl
 	mat.emission = color * 0.3
 
 	cyl.material_override = mat
-
-	# Cylinder axis is Y, rotate to align with beamline (Z)
 	cyl.rotation_degrees.x = 90.0
 
 	add_child(cyl)
-	
 
-func setup_camera():
+
+func setup_camera() -> void:
 	camera_yaw_rig = $CameraYawRig
 	camera_pitch_rig = $CameraYawRig/CameraPitchRig
 	main_camera = $CameraYawRig/CameraPitchRig/Camera3D
@@ -448,7 +499,7 @@ func setup_camera():
 	main_camera.look_at(Vector3.ZERO, Vector3.UP)
 
 
-func setup_environment():
+func setup_environment() -> void:
 	if has_node("WorldEnvironment"):
 		var env_node: WorldEnvironment = $WorldEnvironment
 
